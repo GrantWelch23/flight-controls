@@ -4,28 +4,63 @@ from mavsdk import System
 from mavsdk.offboard import VelocityBodyYawspeed, PositionNedYaw
 
 
-# ====================== HELPER FUNCTIONS ======================
+# ====================== Rotate Function ======================
 async def rotate_180(drone):
-    print("Rotating 180 degrees...")
+    print("Rotating 180 degrees precisely...")
 
-    await drone.offboard.set_velocity_body(
-        VelocityBodyYawspeed(
-            forward_m_s=0.0,
-            right_m_s=0.0,
-            down_m_s=0.0,
-            yawspeed_deg_s=30.0
+    # Get current yaw
+    attitude = await drone.telemetry.attitude_euler().__anext__()
+    current_yaw = attitude.yaw_deg
+
+    # Calculate target yaw (+180 degrees)
+    target_yaw = current_yaw + 180
+    if target_yaw > 180:
+        target_yaw -= 360
+    elif target_yaw < -180:
+        target_yaw += 360
+
+    print(f"Current yaw: {current_yaw:.1f}° → Target yaw: {target_yaw:.1f}°")
+
+    # Rotate while monitoring actual yaw
+    while True:
+        attitude = await drone.telemetry.attitude_euler().__anext__()
+        current_yaw = attitude.yaw_deg
+
+        # Calculate how far we are from target
+        yaw_error = target_yaw - current_yaw
+        if yaw_error > 180:
+            yaw_error -= 360
+        elif yaw_error < -180:
+            yaw_error += 360
+
+        # Live update
+        print(f"Current yaw: {current_yaw:.1f}° | Error: {yaw_error:.1f}°", end="\r")
+
+        # Stop when we're within ±8 degrees of target
+        if abs(yaw_error) < 8:
+            print(f"\n✓ Reached target yaw: {current_yaw:.1f}°")
+            break
+
+        # Continue rotating (adjust speed as needed)
+        await drone.offboard.set_velocity_body(
+            VelocityBodyYawspeed(
+                forward_m_s=0.0,
+                right_m_s=0.0,
+                down_m_s=0.0,
+                yawspeed_deg_s=25.0   # Moderate speed for precision
+            )
         )
-    )
 
-    await asyncio.sleep(6)  # 180 degrees at 30 deg/s
+        await asyncio.sleep(0.1)
 
+    # Stop rotating
     await drone.offboard.set_velocity_body(
         VelocityBodyYawspeed(0.0, 0.0, 0.0, 0.0)
     )
 
     print("✓ Rotation complete")
-# ============================================================
 
+# =========================Script Start=============================
 
 async def run():
     print("=== Flight Started ===")
