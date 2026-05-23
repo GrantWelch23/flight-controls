@@ -1,7 +1,56 @@
 import asyncio
 import sys
+import math
 from mavsdk import System
 from mavsdk.offboard import VelocityBodyYawspeed, PositionNedYaw
+
+# ====================== Fly Forward Function ====================
+
+async def fly_forward(drone, distance_m=10.0):
+    """Fly forward in the direction the drone is currently facing"""
+    print(f"Flying forward {distance_m} meters...")
+
+    # Get current position
+    ned = await drone.telemetry.position_velocity_ned().__anext__()
+    current_north = ned.position.north_m
+    current_east = ned.position.east_m
+    current_down = ned.position.down_m
+
+    # Get current yaw (direction the drone is facing)
+    attitude = await drone.telemetry.attitude_euler().__anext__()
+    current_yaw = attitude.yaw_deg
+
+    # Calculate target position based on current yaw
+    yaw_rad = math.radians(current_yaw)
+    target_north = current_north + distance_m * math.cos(yaw_rad)
+    target_east = current_east + distance_m * math.sin(yaw_rad)
+
+    # Move to the new target
+    await drone.offboard.set_position_ned(
+        PositionNedYaw(
+            north_m=target_north,
+            east_m=target_east,
+            down_m=current_down,
+            yaw_deg=current_yaw
+        )
+    )
+
+    # Live updating distance
+    for _ in range(150):  # Max ~15 seconds
+        current_ned = await drone.telemetry.position_velocity_ned().__anext__()
+        dn = current_ned.position.north_m - current_north
+        de = current_ned.position.east_m - current_east
+        distance_traveled = math.sqrt(dn**2 + de**2)
+
+        print(f"Distance traveled: {distance_traveled:.2f}m / {distance_m:.2f}m", end="\r")
+
+        if distance_traveled >= distance_m - 0.3:
+            print(f"\n✓ Reached target distance: {distance_traveled:.2f}m")
+            break
+
+        await asyncio.sleep(0.1)
+
+# ====================== Flight Start ======================
 
 async def run():
     print("=== Flight Started ===")
@@ -63,57 +112,10 @@ async def run():
 
         await asyncio.sleep(0.1)
 
-    print("Flying forward 10 meters...")
-
-    # Stop any previous movement
-    await drone.offboard.set_velocity_body(
-        VelocityBodyYawspeed(0.0, 0.0, 0.0, 0.0)
-    )
-    await asyncio.sleep(1.0)
-
-    # Get current position
-    ned = await drone.telemetry.position_velocity_ned().__anext__()
-    start_north = ned.position.north_m
-    current_east = ned.position.east_m
-    current_down = ned.position.down_m
-
-    # Set target 10 meters forward
-    target_north = start_north + 10.0
-
-    # Switch to position control
-    await drone.offboard.set_position_ned(
-        PositionNedYaw(
-            north_m=target_north,
-            east_m=current_east,
-            down_m=current_down,
-            yaw_deg=0.0
-        )
-    )
-
-    # Live updating distance
-    for _ in range(150):  # Max 15 seconds
-        current_ned = await drone.telemetry.position_velocity_ned().__anext__()
-        start_north = current_ned.position.north_m
-        distance = start_north - start_north
-
-        print(f"Distance traveled: {distance:.2f}m / 10.00m", end="\r")
-
-        if distance >= 9.5:
-            print(f"\n✓ Reached target distance: {distance:.2f}m")
-            break
-
-        await asyncio.sleep(0.1)
-
-    # Give it time to reach the target
-    await asyncio.sleep(5)
-
-    print("✓ Reached forward position")
-
-    # Stop moving
-    await drone.offboard.set_velocity_body(
-        VelocityBodyYawspeed(0.0, 0.0, 0.0, 0.0)
-    )
-    await asyncio.sleep(1)
+    # ====================== FLY FORWARD ==================
+    await fly_forward(drone, distance_m=10.0)
+    
+    # ====================== Land =========================
 
     print("Stopping and landing...")
     await drone.offboard.stop()
