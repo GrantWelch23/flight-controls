@@ -175,7 +175,8 @@ async def run():
         await rotate_90(drone)
 
     print("\n=== Square Pattern Complete ===")
-    # ========================================================
+    
+    # ======================== Land ==============================
 
     print("Stopping and landing...")
     await drone.offboard.stop()
