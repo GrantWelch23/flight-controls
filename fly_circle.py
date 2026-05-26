@@ -1,41 +1,92 @@
 import asyncio
 import sys
 import math
+import time
 from mavsdk import System
 from mavsdk.offboard import VelocityBodyYawspeed, PositionNedYaw
+
+# ====================== Rotate to Yaw Function =================
+
+async def rotate_to_yaw(drone, target_yaw, rotation_speed=25.0, tolerance=2.0, relative=False):
+    """Rotate to a specific yaw angle (absolute or relative)."""
+    
+    if relative:
+        attitude = await drone.telemetry.attitude_euler().__anext__()
+        current_yaw = attitude.yaw_deg
+        target_yaw = current_yaw + target_yaw   # treat input as relative offset
+
+    print(f"Rotating to target yaw: {target_yaw:.1f}°...")
+
+    while True:
+        attitude = await drone.telemetry.attitude_euler().__anext__()
+        current_yaw = attitude.yaw_deg
+
+        yaw_error = target_yaw - current_yaw
+        if yaw_error > 180:
+            yaw_error -= 360
+        elif yaw_error < -180:
+            yaw_error += 360
+
+        print(f"Current yaw: {current_yaw:.1f}° | Error: {yaw_error:.1f}°", end="\r")
+
+        if abs(yaw_error) < tolerance:
+            print(f"\n✓ Reached target yaw: {current_yaw:.1f}°")
+            break
+
+        direction = 1 if yaw_error > 0 else -1
+        await drone.offboard.set_velocity_body(
+            VelocityBodyYawspeed(
+                forward_m_s=0.0,
+                right_m_s=0.0,
+                down_m_s=0.0,
+                yawspeed_deg_s=rotation_speed * direction
+            )
+        )
+
+        await asyncio.sleep(0.1)
+
+    # Stop rotation
+    await drone.offboard.set_velocity_body(
+        VelocityBodyYawspeed(0.0, 0.0, 0.0, 0.0)
+    )
+    await asyncio.sleep(0.3)
+
 
 # ====================== Fly In A Circle Function =================
 
 async def fly_circle(drone, radius_m=10.0, speed_mps=3.0, duration_s=30.0):
-    """Fly a smooth circle using constant forward speed + yaw rate"""
+    """Fly a smooth circle using constant forward speed + yaw rate."""
     print(f"\n=== Starting Circle ===")
     print(f"Radius: {radius_m}m | Speed: {speed_mps}m/s | Duration: {duration_s}s")
 
-    # Calculate required yaw rate (degrees per second)
+    # Calculate required yaw rate (deg/s)
     yaw_rate_dps = (speed_mps / radius_m) * (180 / math.pi)
     print(f"Calculated yaw rate: {yaw_rate_dps:.1f}°/s")
 
-    # Start flying the circle
+    # Rotate LEFT 90° (relative) so we start facing tangent to the rightward circle
+    await rotate_to_yaw(drone, -90, relative=True)   
+
+    # Start circle flight
     print("Flying circle...")
 
-    start_time = asyncio.get_event_loop().time()
+    start_time = time.perf_counter()
 
     while True:
-        # Send velocity command (forward + yaw rate)
+        #Command the drone to fly forward while constantly yawing
         await drone.offboard.set_velocity_body(
             VelocityBodyYawspeed(
                 forward_m_s=speed_mps,
                 right_m_s=0.0,
                 down_m_s=0.0,
-                yawspeed_deg_s=yaw_rate_dps
+                yawspeed_deg_s=yaw_rate_dps 
             )
         )
 
-        # Live status
-        elapsed = asyncio.get_event_loop().time() - start_time
+        #Track how long we've been flying the circle
+        elapsed = time.perf_counter() - start_time
         print(f"Circle time: {elapsed:.1f}s / {duration_s}s", end="\r")
 
-        # Check if we've flown long enough
+        #Stop after 30s
         if elapsed >= duration_s:
             print(f"\n✓ Circle complete ({duration_s}s)")
             break
@@ -48,10 +99,11 @@ async def fly_circle(drone, radius_m=10.0, speed_mps=3.0, duration_s=30.0):
     )
     print("✓ Circle stopped\n")
 
-# ====================== Flight Plan Start ======================
+
+# ====================== Main Flight Script ======================
 
 async def run():
-    print("=== Flight Started ==")
+    print("=== Flight Started ===")
     sys.stdout.flush()
 
     drone = System()
@@ -77,27 +129,23 @@ async def run():
     await drone.action.takeoff()
     print("✓ Takeoff command sent")
 
-    # Wait 3 seconds so takeoff can begin
     await asyncio.sleep(3)
 
     print("Entering OFFBOARD mode")
 
-    # Set an initial upward velocity setpoint 
     await drone.offboard.set_velocity_body(
         VelocityBodyYawspeed(
             forward_m_s=0.0,
             right_m_s=0.0,
-            down_m_s=-1.0,        # Negative = climb upward
+            down_m_s=-1.0,
             yawspeed_deg_s=0.0
         )
     )
 
-    # OFFBOARD mode 
     await drone.offboard.start()
     print("✓ OFFBOARD mode started")
-    print("Take off initiating...")
 
-    # Climb until we reach ~5 meters
+    # Climb to safe altitude
     print("Climbing to safe altitude...")
     while True:
         position = await drone.telemetry.position().__anext__()
@@ -110,22 +158,10 @@ async def run():
 
         await asyncio.sleep(0.1)
 
-    # ====================== Circle Pattern ======================
+    # ====================== FLY CIRCLE ======================
+    await fly_circle(drone, radius_m=10.0, speed_mps=3.0, duration_s=30.0)
 
-    print("\n=== Starting Circle Pattern ===")
-
-    # Fly the circle
-    await fly_circle(
-        drone,
-        radius_m=10.0,      # Radius of the circle (meters)
-        speed_mps=3.0,      # Forward speed (meters per second)
-        duration_s=30.0     # How long to fly the circle (seconds)
-    )
-
-    print("\n=== Circle Pattern Complete ===")
-
-    # ========================= Land =============================
-
+    # ====================== Land =========================
     print("Stopping and landing...")
     await drone.offboard.stop()
     await drone.action.land()
