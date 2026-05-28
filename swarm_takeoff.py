@@ -17,9 +17,6 @@ Structure:
            (climb to 5m, then switch to stable PositionNedYaw hold)
 
 At the end the script idles so all three offboard streams + holds stay active.
-
-Run:
-    python3 flight_controls/swarm_takeoffv4.py
 """
 
 import asyncio
@@ -29,12 +26,16 @@ from mavsdk.offboard import VelocityBodyYawspeed, PositionNedYaw
 from mavsdk.telemetry import FlightMode
 
 
+# ====================== Drone Configuration ======================
+
 DRONES = [
     ("udpin://0.0.0.0:14540", "Drone 1 (Leader)", 50051),
     ("udpin://0.0.0.0:14541", "Drone 2 (Left)",   50052),
     ("udpin://0.0.0.0:14542", "Drone 3 (Right)",  50053),
 ]
 
+
+# ====================== connect_drone ======================
 
 async def connect_drone(address: str, name: str, grpc_port: int):
     """Connect and wait for basic health. Returns the System or None."""
@@ -66,6 +67,8 @@ async def connect_drone(address: str, name: str, grpc_port: int):
     return None
 
 
+# ====================== arm_and_takeoff ======================
+
 async def arm_and_takeoff(drone: System, name: str):
     """Arm + takeoff. Returns True on success."""
     try:
@@ -83,6 +86,8 @@ async def arm_and_takeoff(drone: System, name: str):
         return False
 
 
+# ====================== wait_airborne ======================
+
 async def wait_airborne(drone: System, name: str, timeout: float = 25.0):
     """Wait until the drone is clearly in the air."""
     start = asyncio.get_running_loop().time()
@@ -99,6 +104,8 @@ async def wait_airborne(drone: System, name: str, timeout: float = 25.0):
     print(f"[{name}] ⚠ Did not confirm airborne within timeout")
     return False
 
+
+# ====================== enter_offboard_and_climb ======================
 
 async def enter_offboard_and_climb(drone: System, name: str, target_alt: float = 5.0):
     """Put one drone into offboard, climb, then switch to position hold."""
@@ -124,7 +131,7 @@ async def enter_offboard_and_climb(drone: System, name: str, target_alt: float =
             if alt >= target_alt:
                 print(f"\n[{name}] ✓ Reached {alt:.2f}m")
 
-                # Switch to stable hold
+                # Switch to stable hold using current NED position + yaw
                 try:
                     ned = await drone.telemetry.position_velocity_ned().__anext__()
                     att = await drone.telemetry.attitude_euler().__anext__()
@@ -149,6 +156,8 @@ async def enter_offboard_and_climb(drone: System, name: str, target_alt: float =
     print(f"\n[{name}] ⚠ Climb timeout")
     return False
 
+
+# ====================== Flight Start ======================
 
 async def main():
     print("=== 3-Drone OFFBOARD (Arm all first → then Offboard) ===\n")
@@ -199,7 +208,7 @@ async def main():
         if ok:
             successful.append(name)
 
-        # Small stagger between offboard entries (not for CPU — to reduce chance of command conflict)
+        # Small stagger between offboard entries (to reduce chance of command conflict)
         if i < len(airborne) - 1:
             await asyncio.sleep(1.0)
 
@@ -211,43 +220,6 @@ async def main():
         print("\n✓ All three drones are now in OFFBOARD holding position at ~5 m.")
         print("  The MAVSDK offboard streams are active.")
         print("  Ready for swarm behavior logic.")
-
-        # ===================== LIVE VERIFICATION =====================
-        print("\n=== LIVE OFFBOARD VERIFICATION ===")
-        print("Monitoring actual flight_mode telemetry for the next 15 seconds...")
-        print("You should see 'OFFBOARD' for all three. This is the real proof.\n")
-
-        verify_start = asyncio.get_running_loop().time()
-        while (asyncio.get_running_loop().time() - verify_start) < 15:
-            modes = []
-            for drone, name in airborne:
-                try:
-                    mode = await drone.telemetry.flight_mode().__anext__()
-                    mode_str = str(mode).split('.')[-1] if '.' in str(mode) else str(mode)
-                    modes.append(f"{name}: {mode_str}")
-                except Exception:
-                    modes.append(f"{name}: ?")
-
-            print(" | ".join(modes))
-            await asyncio.sleep(2.0)
-
-        print("\n=== VERIFICATION COMPLETE ===")
-        print("If you saw OFFBOARD for all three above, they are genuinely in offboard simultaneously.")
-        print("The altitude climb was done using velocity setpoints sent *after* offboard.start() succeeded.")
-        print("PX4 will not obey offboard velocity/position setpoints unless the vehicle is actually in OFFBOARD mode.")
-
-        print("\nIdling with live mode monitoring... (Ctrl-C to exit)")
-        while True:
-            modes = []
-            for drone, name in airborne:
-                try:
-                    mode = await drone.telemetry.flight_mode().__anext__()
-                    mode_str = str(mode).split('.')[-1] if '.' in str(mode) else str(mode)
-                    modes.append(f"{name}: {mode_str}")
-                except Exception:
-                    modes.append(f"{name}: ?")
-            print(" | ".join(modes))
-            await asyncio.sleep(4)
     else:
         print("\nSome drones did not reach offboard hold.")
         print("The ones that did are still holding (their streams are active).")
