@@ -220,6 +220,11 @@ async def main():
         print("\n✓ All three drones are now in OFFBOARD holding position at ~5 m.")
         print("  The MAVSDK offboard streams are active.")
         print("  Ready for swarm behavior logic.")
+
+        # Keep the script alive so offboard streams stay active (prevents PX4 failsafe landing)
+        print("\nIdling... (Ctrl-C to exit and stop offboard streams)")
+        while True:
+            await asyncio.sleep(5)
     else:
         print("\nSome drones did not reach offboard hold.")
         print("The ones that did are still holding (their streams are active).")
