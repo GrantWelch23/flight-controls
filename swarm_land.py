@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 3-Drone Simultaneous Land for Pegasus (Isaac Sim + PX4)
-
 Uses udpin://0.0.0.0:14540/41/42 — MAVSDK listens, PX4 pushes telemetry.
 Connects sequentially to avoid overloading the machine during server startup,
 then lands all three in parallel.
@@ -10,6 +9,9 @@ then lands all three in parallel.
 import asyncio
 from mavsdk import System
 
+
+# ====================== Drone Configuration ======================
+
 DRONES = [
     ("udpin://0.0.0.0:14540", "Drone 1 (Leader)", 50051),
     ("udpin://0.0.0.0:14541", "Drone 2 (Left)",   50052),
@@ -17,7 +19,10 @@ DRONES = [
 ]
 
 
+# ====================== Helper Functions ======================
+
 async def connect_simple(drone: System, address: str, name: str):
+    """Simple connection helper — just gets us connected, no extra health checks needed for landing."""
     print(f"[{name}] Connecting...")
     try:
         await asyncio.wait_for(drone.connect(system_address=address), timeout=30.0)
@@ -33,6 +38,7 @@ async def connect_simple(drone: System, address: str, name: str):
 async def land_and_wait(drone: System, name: str, timeout: float = 50.0):
     """Send land command and wait for touchdown."""
     try:
+        # Stop OFFBOARD mode first if it was active — required before landing in most cases
         try:
             await drone.offboard.stop()
         except Exception:
@@ -56,7 +62,7 @@ async def land_and_wait(drone: System, name: str, timeout: float = 50.0):
 
             now = asyncio.get_event_loop().time()
             if now - last_print > 0.6:
-                print(f"[{name}] ... alt={alt:5.2f}m  in_air={in_air}  armed={armed}", end="\r")
+                print(f"[{name}] ... alt={alt:5.2f}m in_air={in_air} armed={armed}", end="\r")
                 last_print = now
 
             if not in_air and alt < 1.0:
@@ -74,6 +80,8 @@ async def land_and_wait(drone: System, name: str, timeout: float = 50.0):
         return False
 
 
+# ====================== Landing Start ======================
+
 async def main():
     print("=== 3-Drone Simultaneous Land ===\n")
     print("Connecting sequentially...\n")
@@ -85,7 +93,7 @@ async def main():
         if result:
             ready.append((result, name))
         else:
-            print(f"  Skipping {name}\n")
+            print(f" Skipping {name}\n")
 
     if not ready:
         print("\n✗ Nothing connected.")
