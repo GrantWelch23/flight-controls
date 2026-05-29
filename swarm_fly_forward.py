@@ -1,23 +1,4 @@
 #!/usr/bin/env python3
-"""
-3-Drone Arm/Takeoff first → then Offboard (separated phases)
-
-This version was rewritten after observing the real failure mode:
-- Arming drones 2 and 3 with `COMMAND_DENIED` happens specifically *after*
-  drone 1 has already entered offboard.
-- Therefore we must do **all arming + takeoff first** (while no drones
-  are in offboard), then transition them into offboard one by one.
-
-Goal: Get all three drones reliably into OFFBOARD mode holding position
-so you can run swarm behaviors.
-
-Structure:
-  Phase 1: Connect + Arm + Takeoff all three (light stagger between drones)
-  Phase 2: Once all are airborne, put them into offboard one-by-one
-           (climb to 5m, then switch to stable PositionNedYaw hold)
-
-At the end the script idles so all three offboard streams + holds stay active.
-"""
 
 import asyncio
 import sys
@@ -156,28 +137,109 @@ async def enter_offboard_and_climb(drone: System, name: str, target_alt: float =
     print(f"\n[{name}] ⚠ Climb timeout")
     return False
 
+# ====================== Fly Forward ======================
+
+async def fly_forward(drone: System, name: str, distance_m: float = 10.0, speed_mps: float = 2.0):
+    """Fly forward a set distance while maintaining altitude and heading."""
+    print(f"[{name}] Flying forward {distance_m}m at {speed_mps}m/s...")
+
+    try:
+        # Get current position and yaw
+        ned = await drone.telemetry.position_velocity_ned().__anext__()
+        att = await drone.telemetry.attitude_euler().__anext__()
+
+        current_north = ned.position.north_m
+        current_east = ned.position.east_m
+        current_down = ned.position.down_m
+        current_yaw = att.yaw_deg
+
+        # Calculate target position
+        import math
+        yaw_rad = math.radians(current_yaw)
+        target_north = current_north + distance_m * math.cos(yaw_rad)
+        target_east = current_east + distance_m * math.sin(yaw_rad)
+
+        # Move to target position
+        await drone.offboard.set_position_ned(
+            PositionNedYaw(
+                north_m=target_north,
+                east_m=target_east,
+                down_m=current_down,
+                yaw_deg=current_yaw
+            )
+        )
+
+        # Wait until we reach the target
+        for _ in range(200):  # ~20 seconds max
+            current_ned = await drone.telemetry.position_velocity_ned().__anext__()
+            dn = current_ned.position.north_m - current_north
+            de = current_ned.position.east_m - current_east
+            distance_traveled = math.sqrt(dn**2 + de**2)
+
+            print(f"[{name}] Distance traveled: {distance_traveled:.2f}m / {distance_m:.2f}m", end="\r")
+
+            if distance_traveled >= distance_m - 0.5:
+                print(f"\n[{name}] ✓ Reached target distance ({distance_traveled:.2f}m)")
+                return True
+
+            await asyncio.sleep(0.1)
+
+        print(f"\n[{name}] ⚠ Forward flight timeout")
+        return False
+
+    except Exception as e:
+        print(f"\n[{name}] ✗ Forward flight error: {e}")
+        return False
+    
+# ====================== CLEANUP / LAND ======================
+
+async def land_and_cleanup(drone: System, name: str):
+    """Land a drone and clean up OFFBOARD mode."""
+    try:
+        print(f"[{name}] Stopping OFFBOARD and landing...")
+        await drone.offboard.stop()
+        await drone.action.land()
+        print(f"[{name}] ✓ Land command sent")
+
+        # Wait for landing to complete
+        for _ in range(100):  # ~10 seconds max
+            try:
+                in_air = await drone.telemetry.in_air().__anext__()
+                pos = await drone.telemetry.position().__anext__()
+                if not in_air and pos.relative_altitude_m < 0.5:
+                    print(f"[{name}] ✓ Landed successfully")
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(0.1)
+
+        print(f"[{name}] ⚠ Landing timeout (may still be in progress)")
+        return False
+
+    except Exception as e:
+        print(f"[{name}] ✗ Land error: {e}")
+        return False
+
 
 # ====================== Flight Start ======================
 
 async def main():
-    print("=== 3-Drone OFFBOARD (Arm all first → then Offboard) ===\n")
+    print("=== 3-Drone Takeoff + Forward Flight ===\n")
     sys.stdout.flush()
 
     # ===================== PHASE 1: ARM + TAKEOFF ALL FIRST =====================
-    print("=== PHASE 1: Arm + Takeoff all drones (no offboard yet) ===\n")
+    print("=== PHASE 1: Arm + Takeoff all drones ===\n")
 
-    drones = []   # will hold (drone, name) for the ones that make it through arm/takeoff
-
+    drones = []
     for i, (address, name, grpc_port) in enumerate(DRONES):
         drone = await connect_drone(address, name, grpc_port)
         if not drone:
             continue
 
-        arm_success = await arm_and_takeoff(drone, name)
-        if not arm_success:
+        ok = await arm_and_takeoff(drone, name)
+        if not ok:
             continue
 
-        # Small stagger between starting each arm/takeoff sequence
         if i < len(DRONES) - 1:
             await asyncio.sleep(1.2)
 
@@ -208,26 +270,28 @@ async def main():
         if ok:
             successful.append(name)
 
-        # Small stagger between offboard entries (to reduce chance of command conflict)
         if i < len(airborne) - 1:
             await asyncio.sleep(1.0)
 
-    # ===================== FINAL STATE =====================
-    print("\n=== FINAL RESULT ===")
-    print(f"Successfully in OFFBOARD hold: {len(successful)}/3 → {successful}")
+    if len(successful) < 3:
+        print(f"\n✗ Only {len(successful)}/3 drones reached OFFBOARD. Exiting.")
+        return
 
-    if len(successful) == 3:
-        print("\n✓ All three drones are now in OFFBOARD holding position at ~5 m.")
-        print("  The MAVSDK offboard streams are active.")
-        print("  Ready for swarm behavior logic.")
+    print("\n=== All 3 drones in OFFBOARD — starting forward flight ===\n")
 
-        # Keep the script alive so offboard streams stay active (prevents PX4 failsafe landing)
-        print("\nIdling... (Ctrl-C to exit and stop offboard streams)")
-        while True:
-            await asyncio.sleep(5)
-    else:
-        print("\nSome drones did not reach offboard hold.")
-        print("The ones that did are still holding (their streams are active).")
+    # ===================== PHASE 3: FORWARD FLIGHT =====================
+    print("=== PHASE 3: Fly forward together ===\n")
+
+    results = await asyncio.gather(*[fly_forward(d, n, distance_m=10.0, speed_mps=2.0) for d, n in airborne])
+
+    print("\n=== Done ===\n")
+
+    # ===================== PHASE 4: LAND ALL DRONES (PARALLEL) =====================
+    print("=== PHASE 4: Land all drones together ===\n")
+
+    await asyncio.gather(*[land_and_cleanup(d, n) for d, n in airborne])
+
+    print("\n=== Script complete — all drones landed ===\n")
 
 
 if __name__ == "__main__":
