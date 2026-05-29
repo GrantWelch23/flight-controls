@@ -80,7 +80,7 @@ async def land_and_wait(drone: System, name: str, timeout: float = 50.0):
         return False
 
 
-# ====================== Landing Start ======================
+# ====================== Mission Start ======================
 
 async def main():
     print("=== 3-Drone Simultaneous Land ===\n")

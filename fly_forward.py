@@ -50,7 +50,7 @@ async def fly_forward(drone, distance_m=10.0):
 
         await asyncio.sleep(0.1)
 
-# ====================== Flight Start ======================
+# ====================== Mission Start ======================
 
 async def run():
     print("=== Flight Started ===")

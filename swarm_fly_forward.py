@@ -221,7 +221,7 @@ async def land_and_cleanup(drone: System, name: str):
         return False
 
 
-# ====================== Flight Start ======================
+# ====================== Mission Start ======================
 
 async def main():
     print("=== 3-Drone Takeoff + Forward Flight ===\n")

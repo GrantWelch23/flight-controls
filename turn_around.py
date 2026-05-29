@@ -60,7 +60,7 @@ async def rotate_180(drone):
 
     print("✓ Rotation complete")
 
-# =========================Script Start=============================
+# ========================= Mission Start =============================
 
 async def run():
     print("=== Flight Started ===")

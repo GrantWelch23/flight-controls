@@ -157,7 +157,7 @@ async def enter_offboard_and_climb(drone: System, name: str, target_alt: float =
     return False
 
 
-# ====================== Flight Start ======================
+# ====================== Mission Start ======================
 
 async def main():
     print("=== 3-Drone OFFBOARD (Arm all first → then Offboard) ===\n")

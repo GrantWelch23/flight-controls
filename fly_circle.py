@@ -100,7 +100,7 @@ async def fly_circle(drone, radius_m=10.0, speed_mps=3.0, duration_s=30.0):
     print("✓ Circle stopped\n")
 
 
-# ====================== Main Flight Script ======================
+# ====================== Mission Start ======================
 
 async def run():
     print("=== Flight Started ===")
