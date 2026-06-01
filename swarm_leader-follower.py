@@ -207,7 +207,7 @@ async def align_yaw(drone: System, name: str, target_yaw: float, tolerance: floa
     return aligned
 
 
-# ====================== Formation Geometry Helpers ======================
+# ====================== Body Offset To Ned ======================
 
 def body_offset_to_ned(forward_m: float, right_m: float, yaw_deg: float):
     """

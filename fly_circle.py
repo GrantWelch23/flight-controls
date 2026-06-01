@@ -5,6 +5,25 @@ import time
 from mavsdk import System
 from mavsdk.offboard import VelocityBodyYawspeed, PositionNedYaw
 
+
+# ====================== Safety Monitor ======================
+
+async def battery_monitor(drone, name, low_battery_threshold=25.0):
+    """Background task: RTL if battery drops below threshold."""
+    while True:
+        try:
+            battery = await drone.telemetry.battery().__anext__()
+            percent = battery.remaining_percent * 100
+
+            if percent < low_battery_threshold:
+                print(f"\n[{name}] ⚠ LOW BATTERY ({percent:.1f}%) — Returning to Launch!")
+                await drone.action.return_to_launch()
+                return
+        except Exception:
+            pass
+        await asyncio.sleep(5.0)
+
+
 # ====================== Rotate to Yaw Function =================
 
 async def rotate_to_yaw(drone, target_yaw, rotation_speed=25.0, tolerance=2.0, relative=False):
@@ -13,7 +32,7 @@ async def rotate_to_yaw(drone, target_yaw, rotation_speed=25.0, tolerance=2.0, r
     if relative:
         attitude = await drone.telemetry.attitude_euler().__anext__()
         current_yaw = attitude.yaw_deg
-        target_yaw = current_yaw + target_yaw   # treat input as relative offset
+        target_yaw = current_yaw + target_yaw
 
     print(f"Rotating to target yaw: {target_yaw:.1f}°...")
 
@@ -35,68 +54,43 @@ async def rotate_to_yaw(drone, target_yaw, rotation_speed=25.0, tolerance=2.0, r
 
         direction = 1 if yaw_error > 0 else -1
         await drone.offboard.set_velocity_body(
-            VelocityBodyYawspeed(
-                forward_m_s=0.0,
-                right_m_s=0.0,
-                down_m_s=0.0,
-                yawspeed_deg_s=rotation_speed * direction
-            )
+            VelocityBodyYawspeed(0.0, 0.0, 0.0, rotation_speed * direction)
         )
-
         await asyncio.sleep(0.1)
 
-    # Stop rotation
-    await drone.offboard.set_velocity_body(
-        VelocityBodyYawspeed(0.0, 0.0, 0.0, 0.0)
-    )
+    await drone.offboard.set_velocity_body(VelocityBodyYawspeed(0.0, 0.0, 0.0, 0.0))
     await asyncio.sleep(0.3)
 
 
 # ====================== Fly In A Circle Function =================
 
 async def fly_circle(drone, radius_m=10.0, speed_mps=3.0, duration_s=30.0):
-    """Fly a smooth circle using constant forward speed + yaw rate."""
     print(f"\n=== Starting Circle ===")
     print(f"Radius: {radius_m}m | Speed: {speed_mps}m/s | Duration: {duration_s}s")
 
-    # Calculate required yaw rate (deg/s)
     yaw_rate_dps = (speed_mps / radius_m) * (180 / math.pi)
     print(f"Calculated yaw rate: {yaw_rate_dps:.1f}°/s")
 
-    # Rotate LEFT 90° (relative) so we start facing tangent to the rightward circle
-    await rotate_to_yaw(drone, -90, relative=True)   
+    await rotate_to_yaw(drone, -90, relative=True)
 
-    # Start circle flight
     print("Flying circle...")
-
     start_time = time.perf_counter()
 
     while True:
-        #Command the drone to fly forward while constantly yawing
         await drone.offboard.set_velocity_body(
-            VelocityBodyYawspeed(
-                forward_m_s=speed_mps,
-                right_m_s=0.0,
-                down_m_s=0.0,
-                yawspeed_deg_s=yaw_rate_dps 
-            )
+            VelocityBodyYawspeed(speed_mps, 0.0, 0.0, yaw_rate_dps)
         )
 
-        #Track how long we've been flying the circle
         elapsed = time.perf_counter() - start_time
         print(f"Circle time: {elapsed:.1f}s / {duration_s}s", end="\r")
 
-        #Stop after 30s
         if elapsed >= duration_s:
             print(f"\n✓ Circle complete ({duration_s}s)")
             break
 
         await asyncio.sleep(0.1)
 
-    # Stop the drone
-    await drone.offboard.set_velocity_body(
-        VelocityBodyYawspeed(0.0, 0.0, 0.0, 0.0)
-    )
+    await drone.offboard.set_velocity_body(VelocityBodyYawspeed(0.0, 0.0, 0.0, 0.0))
     print("✓ Circle stopped\n")
 
 
@@ -131,17 +125,13 @@ async def run():
 
     await asyncio.sleep(3)
 
+    # Start battery safety monitor
+    battery_task = asyncio.create_task(battery_monitor(drone, "Drone 1"))
+
     print("Entering OFFBOARD mode")
-
     await drone.offboard.set_velocity_body(
-        VelocityBodyYawspeed(
-            forward_m_s=0.0,
-            right_m_s=0.0,
-            down_m_s=-1.0,
-            yawspeed_deg_s=0.0
-        )
+        VelocityBodyYawspeed(0.0, 0.0, -1.0, 0.0)
     )
-
     await drone.offboard.start()
     print("✓ OFFBOARD mode started")
 
@@ -152,23 +142,30 @@ async def run():
         current_alt = position.relative_altitude_m
         print(f"Current altitude: {current_alt:.2f}m", end="\r")
 
-        if current_alt >= 5.0:
+        if current_alt >= 10.0:
             print(f"\n✓ Reached target altitude: {current_alt:.2f}m")
             break
-
         await asyncio.sleep(0.1)
 
     # ====================== FLY CIRCLE ======================
     await fly_circle(drone, radius_m=10.0, speed_mps=3.0, duration_s=30.0)
 
-    # ====================== Land =========================
-    print("Stopping and landing...")
+    # ====================== RETURN TO LAUNCH ======================
+    print("Stopping and returning to launch...")
     await drone.offboard.stop()
-    await drone.action.land()
-    print("✓ Landing command sent")
+    await drone.param.set_param_float("RTL_RETURN_ALT", 10.0)
+    await drone.action.return_to_launch()
+    print("✓ Return to Launch command sent")
 
-    print("=== Script complete ===")
+    # Wait for RTL to complete (drone will land automatically at home)
+    await asyncio.sleep(30)
+    print("=== Mission Complete ===")
+
+    battery_task.cancel()
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        print("\n\nExiting.")
