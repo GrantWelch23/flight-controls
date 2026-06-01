@@ -1,45 +1,38 @@
 #!/usr/bin/env python3
 """
-EMERGENCY RTL SCRIPT
+EMERGENCY RTL SCRIPT (Fast Version)
 Run this immediately if the drone is doing something weird or unsafe.
 """
 
 import asyncio
 import sys
-from config import CONNECTION_STRING
 from mavsdk import System
 
 
 async def emergency_rtl():
-    print("=== EMERGENCY RTL ACTIVATED ===")
+    print("=== ⚠️  EMERGENCY RTL ACTIVATED ⚠️  ===")
     sys.stdout.flush()
 
     drone = System()
-    await drone.connect(system_address=CONNECTION_STRING)
+    await drone.connect(system_address="udpin://0.0.0.0:14540")
 
     print("Connecting to drone...")
     async for state in drone.core.connection_state():
         if state.is_connected:
-            print("✓ Connected to drone")
+            print("✓ Connected")
             break
 
-    # Stop OFFBOARD mode first (important safety step)
-    try:
-        await drone.offboard.stop()
-        print("✓ Stopped OFFBOARD mode")
-    except:
-        pass
-
-    # Set a reasonable RTL altitude
+    # Set RTL altitude
     await drone.param.set_param_float("RTL_RETURN_ALT", 15.0)
 
-    print("Sending RETURN TO LAUNCH command...")
+    # Immediately send RTL (don't stop OFFBOARD first - PX4 handles it)
+    print("Sending EMERGENCY RETURN TO LAUNCH...")
     await drone.action.return_to_launch()
-    print("✓ RTL command sent — Drone returning home")
+    print("✓ RTL command sent — Drone returning home immediately")
 
-    # Wait until the drone has actually landed
+    # Wait for landing confirmation
     print("Waiting for drone to land...")
-    for _ in range(120):  # Max ~2 minutes
+    for _ in range(120):
         try:
             in_air = await drone.telemetry.in_air().__anext__()
             if not in_air:
@@ -50,7 +43,7 @@ async def emergency_rtl():
             pass
         await asyncio.sleep(1.0)
 
-    print("⚠ Timeout waiting for landing confirmation")
+    print("⚠ Timeout waiting for landing")
     print("=== Emergency RTL Complete ===")
 
 
