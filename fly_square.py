@@ -4,39 +4,58 @@ import math
 from mavsdk import System
 from mavsdk.offboard import VelocityBodyYawspeed, PositionNedYaw
 
-# ====================== Fly Forward Function (10m) ====================
 
-async def fly_forward(drone, distance_m=10.0):
-    """Fly forward in the direction the drone is currently facing"""
-    print(f"Flying forward {distance_m} meters...")
+# ====================== Safety Monitor ======================
 
-    # Get current position
+async def battery_monitor(drone, name, low_battery_threshold=25.0):
+    """Background task: RTL if battery drops below threshold."""
+    while True:
+        try:
+            battery = await drone.telemetry.battery().__anext__()
+            percent = battery.remaining_percent * 100
+
+            if percent < low_battery_threshold:
+                print(f"\n[{name}] ⚠ LOW BATTERY ({percent:.1f}%) — Returning to Launch!")
+                await drone.action.return_to_launch()
+                return
+        except Exception:
+            pass
+        await asyncio.sleep(5.0)
+
+
+# ====================== Fly Forward Function (Smooth) ====================
+
+async def fly_forward(drone, distance_m=10.0, max_speed=2.0):
+    """Fly forward smoothly with gradual acceleration."""
+    print(f"Flying forward {distance_m} meters (smooth)...")
+
     ned = await drone.telemetry.position_velocity_ned().__anext__()
     current_north = ned.position.north_m
     current_east = ned.position.east_m
     current_down = ned.position.down_m
 
-    # Get current yaw (direction the drone is facing)
     attitude = await drone.telemetry.attitude_euler().__anext__()
     current_yaw = attitude.yaw_deg
 
-    # Calculate target position based on current yaw
     yaw_rad = math.radians(current_yaw)
     target_north = current_north + distance_m * math.cos(yaw_rad)
     target_east = current_east + distance_m * math.sin(yaw_rad)
 
-    # Move to the new target
-    await drone.offboard.set_position_ned(
-        PositionNedYaw(
-            north_m=target_north,
-            east_m=target_east,
-            down_m=current_down,
-            yaw_deg=current_yaw
-        )
-    )
+    start_time = asyncio.get_running_loop().time()
+    acceleration_time = 2.0
 
-    # Live updating distance
-    for _ in range(150):  # Max ~15 seconds
+    while True:
+        elapsed = asyncio.get_running_loop().time() - start_time
+
+        if elapsed < acceleration_time:
+            current_speed = (elapsed / acceleration_time) * max_speed
+        else:
+            current_speed = max_speed
+
+        await drone.offboard.set_velocity_body(
+            VelocityBodyYawspeed(current_speed, 0.0, 0.0, 0.0)
+        )
+
         current_ned = await drone.telemetry.position_velocity_ned().__anext__()
         dn = current_ned.position.north_m - current_north
         de = current_ned.position.east_m - current_east
@@ -44,11 +63,15 @@ async def fly_forward(drone, distance_m=10.0):
 
         print(f"Distance traveled: {distance_traveled:.2f}m / {distance_m:.2f}m", end="\r")
 
-        if distance_traveled >= distance_m - 0.1:
+        if distance_traveled >= distance_m - 0.5:
             print(f"\n✓ Reached target distance: {distance_traveled:.2f}m")
             break
 
         await asyncio.sleep(0.1)
+
+    await drone.offboard.set_velocity_body(VelocityBodyYawspeed(0.0, 0.0, 0.0, 0.0))
+    await asyncio.sleep(0.5)
+
 
 # ====================== Rotate Function (90 degrees) ======================
 
@@ -56,11 +79,9 @@ async def rotate_90(drone):
     """Rotate 90 degrees clockwise with precision"""
     print("Rotating 90 degrees...")
 
-    # Get current yaw
     attitude = await drone.telemetry.attitude_euler().__anext__()
     current_yaw = attitude.yaw_deg
 
-    # Calculate target yaw (+90 degrees)
     target_yaw = current_yaw + 90
     if target_yaw > 180:
         target_yaw -= 360
@@ -69,7 +90,6 @@ async def rotate_90(drone):
 
     print(f"Current yaw: {current_yaw:.1f}° → Target yaw: {target_yaw:.1f}°")
 
-    # Rotate while monitoring actual yaw
     while True:
         attitude = await drone.telemetry.attitude_euler().__anext__()
         current_yaw = attitude.yaw_deg
@@ -82,32 +102,23 @@ async def rotate_90(drone):
 
         print(f"Current yaw: {current_yaw:.1f}° | Error: {yaw_error:.1f}°", end="\r")
 
-        if abs(yaw_error) < .8:
+        if abs(yaw_error) < 0.8:
             print(f"\n✓ Reached target yaw: {current_yaw:.1f}°")
             break
 
         await drone.offboard.set_velocity_body(
-            VelocityBodyYawspeed(
-                forward_m_s=0.0,
-                right_m_s=0.0,
-                down_m_s=0.0,
-                yawspeed_deg_s=25.0
-            )
+            VelocityBodyYawspeed(0.0, 0.0, 0.0, 25.0)
         )
-
         await asyncio.sleep(0.1)
 
-    # Stop rotating
-    await drone.offboard.set_velocity_body(
-        VelocityBodyYawspeed(0.0, 0.0, 0.0, 0.0)
-    )
-
+    await drone.offboard.set_velocity_body(VelocityBodyYawspeed(0.0, 0.0, 0.0, 0.0))
     print("✓ Rotation complete")
+
 
 # ====================== Mission Start ======================
 
 async def run():
-    print("=== Flight Started ==")
+    print("=== Flight Started ===")
     sys.stdout.flush()
 
     drone = System()
@@ -133,37 +144,28 @@ async def run():
     await drone.action.takeoff()
     print("✓ Takeoff command sent")
 
-    # Wait 3 seconds so takeoff can begin
     await asyncio.sleep(3)
 
+    # Start battery safety monitor
+    battery_task = asyncio.create_task(battery_monitor(drone, "Drone 1"))
+
     print("Entering OFFBOARD mode")
-
-    # Set an initial upward velocity setpoint 
     await drone.offboard.set_velocity_body(
-        VelocityBodyYawspeed(
-            forward_m_s=0.0,
-            right_m_s=0.0,
-            down_m_s=-1.0,        # Negative = climb upward
-            yawspeed_deg_s=0.0
-        )
+        VelocityBodyYawspeed(0.0, 0.0, -1.0, 0.0)
     )
-
-    # OFFBOARD mode 
     await drone.offboard.start()
     print("✓ OFFBOARD mode started")
-    print("Take off initiating...")
 
-    # Climb until we reach ~5 meters
+    # Climb to safe altitude (10m)
     print("Climbing to safe altitude...")
     while True:
         position = await drone.telemetry.position().__anext__()
         current_alt = position.relative_altitude_m
         print(f"Current altitude: {current_alt:.2f}m", end="\r")
 
-        if current_alt >= 5.0:
+        if current_alt >= 10.0:
             print(f"\n✓ Reached target altitude: {current_alt:.2f}m")
             break
-
         await asyncio.sleep(0.1)
 
     # ====================== SQUARE PATTERN ======================
@@ -171,20 +173,26 @@ async def run():
 
     for i in range(4):
         print(f"\n--- Side {i+1}/4 ---")
-        await fly_forward(drone, distance_m=10.0)
+        await fly_forward(drone, distance_m=10.0, max_speed=2.0)   # ← Smooth version
         await rotate_90(drone)
 
     print("\n=== Square Pattern Complete ===")
-    
-    # ======================== Land ==============================
 
-    print("Stopping and landing...")
+    # ====================== RETURN TO LAUNCH ======================
+    print("Stopping and returning to launch...")
     await drone.offboard.stop()
-    await drone.action.land()
-    print("✓ Landing command sent")
+    await drone.param.set_param_float("RTL_RETURN_ALT", 10.0)
+    await drone.action.return_to_launch()
+    print("✓ Return to Launch command sent")
 
-    print("=== Script complete ===")
+    await asyncio.sleep(25)
+    print("=== Mission Complete ===")
+
+    battery_task.cancel()
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        print("\n\nExiting.")

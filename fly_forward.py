@@ -4,39 +4,64 @@ import math
 from mavsdk import System
 from mavsdk.offboard import VelocityBodyYawspeed, PositionNedYaw
 
-# ====================== Fly Forward Function ====================
 
-async def fly_forward(drone, distance_m=10.0):
-    """Fly forward in the direction the drone is currently facing"""
-    print(f"Flying forward {distance_m} meters...")
+# ====================== Safety Monitor ======================
 
-    # Get current position
+async def battery_monitor(drone, name, low_battery_threshold=25.0):
+    """Background task: RTL if battery drops below threshold."""
+    while True:
+        try:
+            battery = await drone.telemetry.battery().__anext__()
+            percent = battery.remaining_percent * 100
+
+            if percent < low_battery_threshold:
+                print(f"\n[{name}] ⚠ LOW BATTERY ({percent:.1f}%) — Returning to Launch!")
+                await drone.action.return_to_launch()
+                return
+        except Exception:
+            pass
+        await asyncio.sleep(5.0)
+
+
+# ====================== Fly Forward Function (Smooth) ====================
+
+async def fly_forward(drone, distance_m=10.0, max_speed=2.0):
+    """Fly forward smoothly with gradual acceleration (no jerky movements)."""
+    print(f"Flying forward {distance_m} meters (smooth acceleration)...")
+
+    # Get current position and yaw
     ned = await drone.telemetry.position_velocity_ned().__anext__()
     current_north = ned.position.north_m
     current_east = ned.position.east_m
     current_down = ned.position.down_m
 
-    # Get current yaw (direction the drone is facing)
     attitude = await drone.telemetry.attitude_euler().__anext__()
     current_yaw = attitude.yaw_deg
 
-    # Calculate target position based on current yaw
+    # Calculate target position
     yaw_rad = math.radians(current_yaw)
     target_north = current_north + distance_m * math.cos(yaw_rad)
     target_east = current_east + distance_m * math.sin(yaw_rad)
 
-    # Move to the new target
-    await drone.offboard.set_position_ned(
-        PositionNedYaw(
-            north_m=target_north,
-            east_m=target_east,
-            down_m=current_down,
-            yaw_deg=current_yaw
-        )
-    )
+    # Use velocity control with gradual acceleration for smoother flight
+    start_time = asyncio.get_running_loop().time()
+    acceleration_time = 2.0  # seconds to reach full speed
 
-    # Live updating distance
-    for _ in range(150):  # Max ~15 seconds
+    while True:
+        elapsed = asyncio.get_running_loop().time() - start_time
+
+        # Gradual acceleration (0 → max_speed over 2 seconds)
+        if elapsed < acceleration_time:
+            current_speed = (elapsed / acceleration_time) * max_speed
+        else:
+            current_speed = max_speed
+
+        # Fly forward at current speed
+        await drone.offboard.set_velocity_body(
+            VelocityBodyYawspeed(current_speed, 0.0, 0.0, 0.0)
+        )
+
+        # Check distance traveled
         current_ned = await drone.telemetry.position_velocity_ned().__anext__()
         dn = current_ned.position.north_m - current_north
         de = current_ned.position.east_m - current_east
@@ -44,11 +69,16 @@ async def fly_forward(drone, distance_m=10.0):
 
         print(f"Distance traveled: {distance_traveled:.2f}m / {distance_m:.2f}m", end="\r")
 
-        if distance_traveled >= distance_m - 0.3:
+        if distance_traveled >= distance_m - 0.5:
             print(f"\n✓ Reached target distance: {distance_traveled:.2f}m")
             break
 
         await asyncio.sleep(0.1)
+
+    # Stop the drone
+    await drone.offboard.set_velocity_body(VelocityBodyYawspeed(0.0, 0.0, 0.0, 0.0))
+    await asyncio.sleep(0.5)
+
 
 # ====================== Mission Start ======================
 
@@ -79,51 +109,48 @@ async def run():
     await drone.action.takeoff()
     print("✓ Takeoff command sent")
 
-    # Wait 3 seconds so takeoff can begin
     await asyncio.sleep(3)
 
+    # Start battery safety monitor
+    battery_task = asyncio.create_task(battery_monitor(drone, "Drone 1"))
+
     print("Entering OFFBOARD mode")
-
-    # Set an initial upward velocity setpoint 
     await drone.offboard.set_velocity_body(
-        VelocityBodyYawspeed(
-            forward_m_s=0.0,
-            right_m_s=0.0,
-            down_m_s=-1.0,        # Negative = climb upward
-            yawspeed_deg_s=0.0
-        )
+        VelocityBodyYawspeed(0.0, 0.0, -1.0, 0.0)
     )
-
-    # OFFBOARD mode 
     await drone.offboard.start()
     print("✓ OFFBOARD mode started")
-    print("Take off initiating...")
 
-    # Climb until we reach ~5 meters
+    # Climb to safe altitude (now 10m)
     print("Climbing to safe altitude...")
     while True:
         position = await drone.telemetry.position().__anext__()
         current_alt = position.relative_altitude_m
         print(f"Current altitude: {current_alt:.2f}m", end="\r")
 
-        if current_alt >= 5.0:
+        if current_alt >= 10.0:
             print(f"\n✓ Reached target altitude: {current_alt:.2f}m")
             break
-
         await asyncio.sleep(0.1)
 
-    # ====================== FLY FORWARD ==================
-    await fly_forward(drone, distance_m=10.0)
-    
-    # ====================== Land =========================
+    # ====================== FLY FORWARD (SMOOTH) ==================
+    await fly_forward(drone, distance_m=10.0, max_speed=2.0)
 
-    print("Stopping and landing...")
+    # ====================== RETURN TO LAUNCH ======================
+    print("Stopping and returning to launch...")
     await drone.offboard.stop()
-    await drone.action.land()
-    print("✓ Landing command sent")
+    await drone.param.set_param_float("RTL_RETURN_ALT", 10.0)
+    await drone.action.return_to_launch()
+    print("✓ Return to Launch command sent")
 
-    print("=== Script complete ===")
+    await asyncio.sleep(25)
+    print("=== Mission Complete ===")
+
+    battery_task.cancel()
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        print("\n\nExiting.")
