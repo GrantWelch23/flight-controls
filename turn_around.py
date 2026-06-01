@@ -1,5 +1,6 @@
 import asyncio
 import sys
+from config import CONNECTION_STRING
 from mavsdk import System
 from mavsdk.offboard import VelocityBodyYawspeed, PositionNedYaw
 
@@ -67,7 +68,7 @@ async def run():
     sys.stdout.flush()
 
     drone = System()
-    await drone.connect(system_address="udpin://0.0.0.0:14540")
+    await drone.connect(system_address=CONNECTION_STRING)
 
     print("Waiting for drone connection...")
     async for state in drone.core.connection_state():

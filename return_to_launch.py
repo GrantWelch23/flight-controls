@@ -6,6 +6,7 @@ Run this immediately if the drone is doing something weird or unsafe.
 
 import asyncio
 import sys
+from config import CONNECTION_STRING
 from mavsdk import System
 
 
@@ -14,7 +15,7 @@ async def emergency_rtl():
     sys.stdout.flush()
 
     drone = System()
-    await drone.connect(system_address="udpin://0.0.0.0:14540")
+    await drone.connect(system_address=CONNECTION_STRING)
 
     print("Connecting to drone...")
     async for state in drone.core.connection_state():
