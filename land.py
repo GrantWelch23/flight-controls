@@ -14,21 +14,36 @@ async def run():
             print("✓ Connected to drone")
             break
 
-    # Stop OFFBOARD mode first (important safety step)
-    try:
-        await drone.offboard.stop()
-        print("✓ Stopped OFFBOARD mode")
-    except:
-        pass  # It's okay if OFFBOARD wasn't active
-
     print("Sending LAND command...")
     await drone.action.land()
     print("✓ Land command sent")
 
-    # Give it a few seconds to descend
-    await asyncio.sleep(8)
+    # Wait for landing to complete
+    print("Waiting for landing to complete...")
+    for _ in range(60):
+        try:
+            in_air = await drone.telemetry.in_air().__anext__()
+            if not in_air:
+                print("✓ Landed safely")
+                break
+        except Exception:
+            pass
+        await asyncio.sleep(1.0)
+
+    # Disarm
+    print("Disarming...")
+    await drone.action.disarm()
+    print("✓ Disarmed")
+
+    # Give PX4 time to fully reset its state (important!)
+    print("Waiting for system to reset...")
+    await asyncio.sleep(5)
+
     print("=== Land script finished ===")
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        print("\n\nExiting.")
